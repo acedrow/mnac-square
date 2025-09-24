@@ -1,63 +1,74 @@
-const express = require('express')
-require('dotenv').config();
-const axios = require('axios');
+import express from "express";
+import dotenv from "dotenv";
+import { fetchCustomers, fetchOrders } from "./src/services.js";
+import dayjs from "dayjs";
 
-const app = express()
-const port = 3000
+dotenv.config();
+const app = express();
+const port = 3000;
 
-console.log(`Database Host: ${process.env.SQUARE_PROD_ACCESS_TOKEN}`);
+// gets all square customers with names
+app.get("/customers", async (_, res) => {
+  try {
+    const customers = await fetchCustomers(
+      process.env.SQUARE_PROD_API_BASE_URL,
+      process.env.SQUARE_PROD_ACCESS_TOKEN,
+    );
+    res.send(customers);
+  } catch (error) {
+    console.log(error);
+    res.status(error?.response?.status ?? 500).send(error?.response?.data);
+  }
+});
 
-app.get('/customers', async (req, res) => {
-    try {
-        const response = await axios.get(`https://connect.squareup.com/v2/customers`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.SQUARE_PROD_ACCESS_TOKEN}`
-            }
-        })
-        let customers = [];
-        response.data.customers.forEach(customer => {
-            if (customer.given_name && customer.family_name) {
-                customers.push({ name: customer.given_name + ' ' + customer.family_name, id: customer.id });
-            }
-        });
+app.get("/membership-report", async (req, res) => {
+  try {
+    const customers = await fetchCustomers(
+      process.env.SQUARE_PROD_API_BASE_URL,
+      process.env.SQUARE_PROD_ACCESS_TOKEN,
+    );
+    const customerIds = customers.map((customer) => customer.id);
+    let orderData = [];
+    let index = 0;
 
-        res.send(customers)
-    } catch (error) {
-        res.status(error.response.status).send(error.response.data)
+    while (index < customerIds.length + 9) {
+      const subscriptions = await fetchOrders(
+        process.env.SQUARE_PROD_API_BASE_URL,
+        process.env.SQUARE_PROD_ACCESS_TOKEN,
+        customerIds.slice(index, index + 10),
+        process.env.SQUARE_MNAC_LOCATION_ID,
+        `${dayjs().startOf("month").format("YYYY-MM-DDTHH:mm")}:00Z`,
+        `${dayjs().endOf("month").format("YYYY-MM-DDTHH:mm")}:00Z`,
+      );
+      orderData = [...orderData, ...subscriptions];
+      index += 10;
     }
-})
 
-app.post('/mnac-subscriptions/:customerId', async (req, res) => {
-    try {
-        const response = await axios.post(`https://connect.squareup.com/v2/orders/search`, {
-            return_entries: true,
-            location_ids: [
-                process.env.SQUARE_MNAC_LOCATION_ID
-            ],
-            query: {
-                filter: {
-                    customer_filter: {
-                        customer_ids: [req.params.customerId]
-                    }
-                }
-            }
+    orderData = orderData.filter((order) =>
+      order.line_items.some((lineItem) => lineItem.name === "MNAC Membership"),
+    );
 
-        }, {
-            headers: {
-                'Authorization': `Bearer ${process.env.SQUARE_PROD_ACCESS_TOKEN}`
-            }
-        })
-        const subscriptions = response.data.order_entries.filter(
-            order => order.line_items.some(
-                lineItem => lineItem.name === 'MNAC Membership')).map(
-                    order => order.created_at)
-        res.send(subscriptions)
-    } catch (error) {
-        console.log(error)
-        res.status(error.response.status).send(error.response.data)
-    }
-})
+
+    const reportData = customers.map((customer) => {
+      const membershipOrder = orderData.find(
+        (order) => order.customer_id === customer.id,
+      );
+      return {
+        customerName: customer.name,
+        customerId: customer.id,
+        activeMembership: membershipOrder ? "Yes" : "No",
+        orderId: membershipOrder?.id ?? "No membership order found",
+        orderDate: membershipOrder?.created_at ?? "No membership order found",
+      };
+    });
+
+    res.send(reportData);
+  } catch (error) {
+    console.log(error);
+    res.status(error.response.status).send(error.response.data);
+  }
+});
 
 app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
+  console.log(`Example app listening on port ${port}`);
+});
